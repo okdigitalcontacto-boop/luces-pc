@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Luces PC</title>
+<meta name="description" content="Controla las tiras LED Bluetooth (ELK-BLEDOM, MELK, LotusLamp) de tu PC.">
+<meta name="theme-color" content="#f5f5f7" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icon-192.png">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="app">
+
+  <header class="top">
+    <div class="who">
+      <h1 id="devName">Luces PC</h1>
+      <p id="status" class="status" role="status">Sin conectar</p>
+    </div>
+    <button id="power" class="power" aria-pressed="false" aria-label="Encender o apagar" disabled>
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v8"/><path d="M6.3 6.3a8 8 0 1 0 11.4 0"/></svg>
+    </button>
+  </header>
+
+  <!-- La tira: refleja lo que se envía a los LEDs -->
+  <section class="strip-wrap" aria-label="Vista previa de la luz">
+    <div id="strip" class="strip"><span class="strip-glow"></span></div>
+    <button id="connect" class="connect">Conectar luces</button>
+  </section>
+
+  <div id="notice" class="notice" hidden></div>
+
+  <section class="card bright">
+    <div class="row-label"><span>Brillo</span><output id="brightOut">100 %</output></div>
+    <input id="bright" type="range" min="1" max="100" value="100" aria-label="Brillo">
+  </section>
+
+  <nav class="seg" role="tablist" aria-label="Modo">
+    <button role="tab" aria-selected="true" data-tab="color">Color</button>
+    <button role="tab" aria-selected="false" data-tab="white">Blanco</button>
+    <button role="tab" aria-selected="false" data-tab="fx">Efectos</button>
+    <button role="tab" aria-selected="false" data-tab="music">Música</button>
+  </nav>
+
+  <!-- COLOR -->
+  <section class="card panel" data-panel="color">
+    <div class="wheel-wrap">
+      <canvas id="wheel" width="560" height="560" aria-label="Rueda de color"></canvas>
+      <span id="knob" class="knob"></span>
+    </div>
+    <div class="swatches" id="swatches"></div>
+    <div class="row-label"><span>Favoritos</span><span class="links"><button id="editFav" class="link">Editar</button><button id="saveFav" class="link">Guardar actual</button></span></div>
+    <div class="favs" id="favs"><p class="hint">Guarda aquí tus colores y escenas para tenerlos a un toque.</p></div>
+  </section>
+
+  <!-- BLANCO -->
+  <section class="card panel" data-panel="white" hidden>
+    <div class="row-label"><span>Temperatura</span><output id="tempOut">Neutro</output></div>
+    <input id="temp" type="range" min="0" max="100" value="50" class="temp" aria-label="Temperatura de blanco">
+    <div class="ends"><span>Frío</span><span>Cálido</span></div>
+    <p class="hint">Si tu tira es solo RGB, el blanco se mezcla con los tres colores.</p>
+  </section>
+
+  <!-- EFECTOS -->
+  <section class="card panel" data-panel="fx" hidden>
+    <div class="row-label"><span>Velocidad</span><output id="speedOut">50</output></div>
+    <input id="speed" type="range" min="0" max="100" value="50" aria-label="Velocidad del efecto">
+    <input id="fxSearch" class="search" type="search" placeholder="Buscar efecto" aria-label="Buscar efecto">
+    <div class="fx" id="fxList"></div>
+  </section>
+
+  <!-- MÚSICA -->
+  <section class="card panel" data-panel="music" hidden>
+    <button id="micBtn" class="big">Escuchar con el micrófono</button>
+    <div class="meter" aria-hidden="true"><span id="meter"></span></div>
+    <div class="chips" id="musicModes">
+      <button class="chip on" data-mm="pulse">Pulso arcoíris</button>
+      <button class="chip" data-mm="spectrum">Por frecuencia</button>
+      <button class="chip" data-mm="solid">Mi color</button>
+    </div>
+    <div class="row-label"><span>Sensibilidad</span><output id="sensOut">60</output></div>
+    <input id="sens" type="range" min="1" max="100" value="60" aria-label="Sensibilidad">
+    <p class="hint">Usa el micrófono de este dispositivo: pon música cerca y deja la app abierta.</p>
+    <details class="sub">
+      <summary>Micrófono del propio controlador</summary>
+      <p class="hint">Solo funciona si tu mando tiene micrófono incorporado.</p>
+      <div class="chips"><button class="chip" id="hwMicOn">Activar</button><button class="chip" id="hwMicOff">Desactivar</button></div>
+    </details>
+  </section>
+
+  <section class="card">
+    <div class="row-label"><span>Apagar en</span><output id="timerOut">—</output></div>
+    <div class="chips" id="timer">
+      <button class="chip" data-min="15">15 min</button>
+      <button class="chip" data-min="30">30 min</button>
+      <button class="chip" data-min="60">1 h</button>
+      <button class="chip" data-min="0">Cancelar</button>
+    </div>
+    <p class="hint">El temporizador funciona mientras la app siga abierta.</p>
+  </section>
+
+  <details class="card settings">
+    <summary>Ajustes y ayuda</summary>
+    <label class="field">Tipo de controlador
+      <select id="model"></select>
+    </label>
+    <p class="hint">Se detecta solo por el nombre. Si las luces no responden, prueba otra variante con el mismo nombre.</p>
+    <label class="check"><input type="checkbox" id="anyDevice"> Mostrar todos los dispositivos Bluetooth al conectar</label>
+    <label class="check"><input type="checkbox" id="autoOn" checked> Encender al conectar</label>
+    <button id="forget" class="link">Desconectar</button>
+    <pre id="log" class="log" aria-label="Registro"></pre>
+  </details>
+
+  <footer class="foot">Protocolo basado en <a href="https://github.com/dave-code-ruiz/elkbledom">elkbledom</a> (MIT).</footer>
+</div>
+<script type="module" src="app.js"></script>
+</body>
+</html>
