@@ -123,8 +123,8 @@ input[type="range"]::-moz-range-thumb { width: 28px; height: 28px; border-radius
 .ends { display: flex; justify-content: space-between; color: var(--muted); font-size: 13px; margin-top: -8px; }
 
 /* Segmentado */
-.seg { display: grid; grid-template-columns: repeat(4, 1fr); background: var(--fill); border-radius: 12px; padding: 3px; gap: 2px; }
-.seg button { border: 0; background: transparent; border-radius: 9px; padding: 8px 0; font-size: 14px; font-weight: 500; color: var(--ink); }
+.seg { display: grid; grid-template-columns: repeat(5, 1fr); background: var(--fill); border-radius: 12px; padding: 3px; gap: 2px; }
+.seg button { border: 0; background: transparent; border-radius: 9px; padding: 8px 0; font-size: 13.5px; font-weight: 500; color: var(--ink); }
 .seg button[aria-selected="true"] { background: var(--card); box-shadow: 0 1px 3px rgb(0 0 0 / .12); font-weight: 600; }
 
 /* Rueda */
@@ -162,6 +162,43 @@ input[type="range"]::-moz-range-thumb { width: 28px; height: 28px; border-radius
 .log { margin: 0; max-height: 160px; overflow: auto; background: var(--fill); border-radius: 10px; padding: 10px; font: 12px/1.5 ui-monospace, Consolas, monospace; color: var(--muted); white-space: pre-wrap; }
 .foot { text-align: center; font-size: 12px; color: var(--muted); }
 .foot a { color: inherit; }
+
+
+/* Momentos */
+.moments { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; }
+.moment { border: 0; background: var(--card); border-radius: 16px; padding: 12px 2px 10px; display: grid; justify-items: center; gap: 7px; font-size: 12.5px; font-weight: 500; color: var(--ink); transition: transform .15s, box-shadow .2s; }
+.moment i { width: 26px; height: 26px; border-radius: 50%; display: block; }
+.moment:active { transform: scale(.95); }
+.moment.on { box-shadow: inset 0 0 0 2px var(--ink); }
+.moment-hint { margin: -6px 4px 0; min-height: 18px; font-size: 13px; color: var(--muted); text-align: center; }
+
+/* Foto */
+.photo { display: grid; gap: 12px; }
+.photo-btn { display: flex; align-items: center; justify-content: center; gap: 8px; background: var(--fill); border-radius: 12px; padding: 11px; font-size: 15px; font-weight: 500; cursor: pointer; }
+.photo-btn svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linejoin: round; }
+.photo-box { display: grid; gap: 10px; }
+#photoCv { width: 100%; border-radius: 14px; display: block; cursor: crosshair; touch-action: none; }
+#photoPlay { justify-self: start; }
+
+/* Mis efectos */
+.palette { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+.palette .sw { position: relative; }
+.palette .add { width: 36px; height: 36px; border-radius: 50%; border: 1.5px dashed var(--muted); background: transparent; color: var(--muted); font-size: 20px; line-height: 1; padding: 0; position: relative; overflow: hidden; }
+.palette .add input { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
+.sep { border: 0; border-top: 1px solid var(--line); margin: 4px 0; width: 100%; }
+.myfx { border: 0; background: var(--fill); border-radius: 99px; padding: 6px 12px 6px 6px; display: flex; align-items: center; gap: 8px; font-size: 14px; }
+.myfx i { width: 22px; height: 22px; border-radius: 50%; display: block; }
+
+/* Enfoque */
+.focus-clock { position: relative; width: min(220px, 70%); aspect-ratio: 1; margin: 4px auto; }
+.focus-clock svg { width: 100%; height: 100%; transform: rotate(-90deg); }
+.ring-bg, .ring { fill: none; stroke-width: 6; }
+.ring-bg { stroke: var(--fill); }
+.ring { stroke: var(--led); stroke-linecap: round; stroke-dasharray: 339.3; stroke-dashoffset: 0; transition: stroke-dashoffset .5s linear, stroke .4s; }
+.focus-read { position: absolute; inset: 0; display: grid; place-content: center; text-align: center; gap: 2px; }
+.focus-read output { font-size: 46px; font-weight: 600; letter-spacing: -0.03em; font-variant-numeric: tabular-nums; }
+.focus-read span { font-size: 13px; color: var(--muted); }
+.focus-actions { display: grid; grid-template-columns: 1fr auto; gap: 10px; align-items: center; }
 
 @media (prefers-reduced-motion: reduce) {
   .strip, .strip * { animation: none !important; transition: none !important; }

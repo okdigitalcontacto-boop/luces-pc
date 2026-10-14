@@ -340,11 +340,13 @@ async function flush() {
 function setPower(on) {
   state.on = on;
   send('power', cmd(on ? 'turn_on' : 'turn_off'));
+  if (on) send('brightness', cmd('brightness', { i: state.bright }));
   $('#power').setAttribute('aria-pressed', String(on));
   paint();
 }
 function sendColor(rgb) { send('color', cmd('color', { r: rgb[0], g: rgb[1], b: rgb[2] })); }
 function applyColor() {
+  stopEngines(); clearMoment();
   state.mode = 'color'; store.set('rgb', state.rgb);
   if (!state.on) setPower(true);
   sendColor(state.rgb); paint();
@@ -354,7 +356,8 @@ function applyBright() {
   send('brightness', cmd('brightness', { i: state.bright }));
   paint();
 }
-function applyTemp() {
+function applyTemp(fromAuto = false) {
+  stopEngines(fromAuto ? 'auto' : undefined); if (!fromAuto) clearMoment();
   state.mode = 'white'; store.set('temp', state.temp);
   if (!state.on) setPower(true);
   const c = cmd('color_temp', { w: state.temp, c: 100 - state.temp });
@@ -362,6 +365,7 @@ function applyTemp() {
   paint();
 }
 function applyFx(fx) {
+  stopEngines(); clearMoment();
   state.mode = 'fx'; state.fx = fx; store.set('fx', fx);
   if (!state.on) setPower(true);
   send('effect', cmd('effect', { v: fx.v }));
@@ -379,6 +383,7 @@ const strip = $('#strip');
 function paint() {
   strip.className = 'strip';
   if (!state.on) { strip.classList.add('off'); return; }
+  if (state.mode === 'custom' || state.mode === 'music') { strip.style.opacity = 1; strip.style.animationDuration = ''; return; }
   let rgb = state.rgb;
   if (state.mode === 'white') rgb = tempRGB(state.temp);
   if (state.mode === 'fx' && state.fx) {
@@ -393,6 +398,12 @@ function paint() {
   strip.style.opacity = state.mode === 'music' ? 1 : 0.35 + 0.65 * state.bright / 100;
 }
 function setLed(rgb) { document.documentElement.style.setProperty('--led', css(rgb)); }
+// Vista previa de animaciones: mantiene el tono y expresa la intensidad con la opacidad de la tira
+function previewLed(rgb) {
+  const m = Math.max(...rgb, 1);
+  setLed(rgb.map((x) => Math.round(x * 255 / m)));
+  strip.style.opacity = 0.3 + 0.7 * m / 255;
+}
 
 // ---------- Rueda de color ----------
 const wheel = $('#wheel'), knob = $('#knob');
@@ -440,14 +451,15 @@ function renderFavs() {
   state.favs.forEach((f, i) => {
     const wrap = document.createElement('span'); wrap.className = 'fav';
     const b = document.createElement('button'); b.className = 'sw';
-    b.style.background = f.type === 'fx' ? 'conic-gradient(#ff3b30,#ffcc00,#34c759,#007aff,#af52de,#ff3b30)' : css(f.type === 'white' ? tempRGB(f.temp) : f.rgb);
-    b.title = f.type === 'fx' ? f.fx.name : f.type === 'white' ? 'Blanco' : 'Color';
+    b.style.background = f.type === 'fx' ? 'conic-gradient(#ff3b30,#ffcc00,#34c759,#007aff,#af52de,#ff3b30)' : f.type === 'custom' ? `linear-gradient(135deg, ${f.colors.map(css).join(',')})` : css(f.type === 'white' ? tempRGB(f.temp) : f.rgb);
+    b.title = f.type === 'fx' ? f.fx.name : f.type === 'custom' ? 'Mi efecto' : f.type === 'white' ? 'Blanco' : 'Color';
     b.setAttribute('aria-label', 'Favorito: ' + b.title);
     b.onclick = () => {
       if (f.bright) { state.bright = f.bright; $('#bright').value = f.bright; $('#brightOut').value = f.bright + ' %'; applyBright(); }
       if (f.type === 'color') { state.rgb = f.rgb; placeKnob(f.rgb); applyColor(); }
       if (f.type === 'white') { state.temp = f.temp; $('#temp').value = f.temp; applyTemp(); }
       if (f.type === 'fx') { state.speed = f.speed; $('#speed').value = f.speed; applyFx(f.fx); }
+      if (f.type === 'custom') playAnim(f.colors, f.style, f.period);
     };
     const x = document.createElement('button'); x.className = 'x'; x.textContent = '×'; x.setAttribute('aria-label', 'Quitar favorito');
     x.onclick = () => { state.favs.splice(i, 1); store.set('favs', state.favs); renderFavs(); };
@@ -459,6 +471,7 @@ $('#saveFav').onclick = () => {
   if (f.type === 'color') f.rgb = state.rgb;
   if (f.type === 'white') f.temp = state.temp;
   if (f.type === 'fx') { if (!state.fx) return; f.fx = state.fx; f.speed = state.speed; }
+  if (f.type === 'custom') { if (!anim) return; f.colors = anim.colors; f.style = anim.style; f.period = anim.period; }
   state.favs.push(f); state.favs = state.favs.slice(-12);
   store.set('favs', state.favs); renderFavs();
 };
@@ -512,6 +525,7 @@ $$('#musicModes .chip').forEach((c) => c.onclick = () => {
 slider('#sens', '#sensOut', (v) => v, () => {});
 $('#micBtn').onclick = async () => {
   if (audio) return stopMusic();
+  stopEngines('music'); clearMoment();
   try {
     const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false } });
     const ctx = new AudioContext();
@@ -524,11 +538,11 @@ $('#micBtn').onclick = async () => {
     requestAnimationFrame(musicLoop);
   } catch (e) { fail(new Error('No se pudo usar el micrófono: ' + e.message)); }
 };
-function stopMusic() {
+function stopMusic(quiet = false) {
   audio.stream.getTracks().forEach((t) => t.stop()); audio.ctx.close(); audio = null;
   $('#micBtn').textContent = 'Escuchar con el micrófono'; $('#micBtn').classList.remove('on');
   $('#meter').style.width = '0';
-  state.mode = 'color'; paint();
+  if (!quiet) { state.mode = 'color'; sendColor(state.rgb); paint(); }
 }
 function musicLoop(t) {
   if (!audio) return;
@@ -548,7 +562,7 @@ function musicLoop(t) {
     rgb = hsv2rgb(h, 1, 0.06 + 0.94 * level);
   } else rgb = state.rgb.map((c) => Math.round(c * (0.06 + 0.94 * level)));
   $('#meter').style.width = level * 100 + '%';
-  setLed(rgb);
+  previewLed(rgb);
   if (t - lastSend > 60) { lastSend = t; sendColor(rgb); }
   requestAnimationFrame(musicLoop);
 }
@@ -564,10 +578,263 @@ $$('#timer .chip').forEach((c) => c.onclick = () => {
   const min = +c.dataset.min;
   if (!min) { $('#timerOut').value = '—'; return; }
   timerEnd = Date.now() + min * 60000;
-  timerId = setTimeout(() => { setPower(false); $('#timerOut').value = 'Apagado'; clearInterval(timerTick); $$('#timer .chip').forEach((x) => x.classList.remove('on')); }, min * 60000);
-  const upd = () => { $('#timerOut').value = Math.ceil((timerEnd - Date.now()) / 60000) + ' min'; };
-  upd(); timerTick = setInterval(upd, 15000);
+  const fadeMs = Math.min(5, min / 3) * 60000, startBright = state.bright;
+  timerId = setTimeout(() => {
+    setPower(false); clearInterval(timerTick);
+    $('#timerOut').value = 'Apagado'; $$('#timer .chip').forEach((x) => x.classList.remove('on'));
+    state.bright = startBright; $('#bright').value = startBright; $('#brightOut').value = startBright + ' %'; store.set('bright', startBright);
+  }, min * 60000);
+  const upd = () => {
+    const left = timerEnd - Date.now();
+    $('#timerOut').value = Math.ceil(left / 60000) + ' min';
+    if ($('#softOff').checked && left < fadeMs && state.on) {
+      const v = Math.max(1, Math.round(startBright * left / fadeMs));
+      if (v !== state.bright) { state.bright = v; $('#bright').value = v; $('#brightOut').value = v + ' %'; send('brightness', cmd('brightness', { i: v })); paint(); }
+    }
+  };
+  upd(); timerTick = setInterval(upd, 5000);
 });
+
+// ---------- Motor de animación propio ----------
+// La app calcula cada fotograma y se lo manda a la tira: permite efectos que el controlador no trae.
+let anim = null;
+const autoDay = { on: false, t: null };
+const lerp = (a, b, t) => a.map((x, i) => Math.round(x + (b[i] - x) * t));
+const ease = (t) => t * t * (3 - 2 * t);
+function stopEngines(except) {
+  if (except !== 'music' && audio) stopMusic(true);
+  if (except !== 'anim') { anim = null; syncPlay(); }
+  if (except !== 'auto' && autoDay.on) setAutoDay(false);
+}
+function playAnim(colors, style, period, keepMoment = false) {
+  stopEngines('anim'); if (!keepMoment) clearMoment();
+  anim = { colors: colors.slice(), style, period, t0: performance.now(), last: 0 };
+  state.mode = 'custom';
+  if (!state.on) setPower(true);
+  paint(); syncPlay();
+  requestAnimationFrame(animLoop);
+}
+function animFrame(a, t) {
+  const n = a.colors.length, p = (t - a.t0) / 1000 / a.period;
+  const i = Math.floor(p) % n, f = p - Math.floor(p), c = a.colors[i], next = a.colors[(i + 1) % n];
+  if (a.style === 'jump') return c;
+  if (a.style === 'breathe') { const k = 0.5 - 0.5 * Math.cos(f * 2 * Math.PI); return c.map((x) => Math.round(x * (0.06 + 0.94 * k))); }
+  if (a.style === 'wave') { const k = 0.55 + 0.45 * Math.sin(f * 2 * Math.PI); return lerp(c, next, ease(f)).map((x) => Math.round(x * k)); }
+  return lerp(c, next, ease(Math.min(1, f * 1.4)));          // fundido con pausa en cada color
+}
+function animLoop(t) {
+  if (!anim) return;
+  const rgb = animFrame(anim, t);
+  previewLed(rgb);
+  if (t - anim.last > 80) { anim.last = t; sendColor(rgb); }
+  requestAnimationFrame(animLoop);
+}
+const tempoToPeriod = (v) => +(8 - v / 100 * 7.4).toFixed(2);  // 1 → 8 s · 100 → 0,6 s
+
+// ---------- Momentos ----------
+const MOMENTS = {
+  gaming:  { hint: 'Gaming · colores vivos en movimiento', bright: 100, run: () => playAnim([[255, 0, 180], [140, 0, 255], [0, 120, 255]], 'fade', 2.5, true) },
+  cine:    { hint: 'Película · blanco tenue detrás de la pantalla', bright: 15, run: () => { setTempUI(20); applyTemp(true); } },
+  estudio: { hint: 'Estudio · blanco frío y brillante', bright: 100, run: () => { setTempUI(10); applyTemp(true); } },
+  relax:   { hint: 'Relax · inspira cuando sube la luz, espira cuando baja', bright: 70, run: () => playAnim([[255, 120, 40], [255, 60, 90]], 'breathe', 10, true) },
+  noche:   { hint: 'Noche · luz cálida muy baja, sin azules', bright: 8, run: () => { stopEngines(); state.mode = 'color'; state.rgb = [255, 60, 0]; placeKnob(state.rgb); if (!state.on) setPower(true); sendColor(state.rgb); paint(); } },
+};
+function runMoment(id) {
+  const m = MOMENTS[id];
+  stopEngines();
+  $$('.moment').forEach((b) => b.classList.toggle('on', b.dataset.moment === id));
+  $('#momentHint').textContent = m.hint;
+  setBright(m.bright);
+  m.run();
+  store.set('moment', id);
+}
+function clearMoment() { $$('.moment').forEach((b) => b.classList.remove('on')); $('#momentHint').textContent = ''; store.set('moment', null); }
+$$('.moment').forEach((b) => b.onclick = () => runMoment(b.dataset.moment));
+function setBright(v) { state.bright = v; $('#bright').value = v; $('#brightOut').value = v + ' %'; applyBright(); }
+function setTempUI(v) { state.temp = v; $('#temp').value = v; $('#tempOut').value = v < 34 ? 'Frío' : v > 66 ? 'Cálido' : 'Neutro'; }
+
+// ---------- Color de una foto ----------
+const photoCv = $('#photoCv');
+let photoPalette = [];
+$('#photoIn').addEventListener('change', async (e) => {
+  const file = e.target.files[0]; if (!file) return;
+  const img = new Image();
+  img.onload = () => {
+    const w = 600, h = Math.round(w * img.height / img.width);
+    photoCv.width = w; photoCv.height = Math.min(h, 600);
+    const ctx = photoCv.getContext('2d', { willReadFrequently: true });
+    const scale = Math.max(w / img.width, photoCv.height / img.height);
+    ctx.drawImage(img, (w - img.width * scale) / 2, (photoCv.height - img.height * scale) / 2, img.width * scale, img.height * scale);
+    URL.revokeObjectURL(img.src);
+    photoPalette = extractPalette(ctx.getImageData(0, 0, w, photoCv.height).data);
+    $('#photoPal').replaceChildren(...photoPalette.map((c) => {
+      const b = document.createElement('button'); b.className = 'sw'; b.style.background = css(c); b.setAttribute('aria-label', 'Color de la foto');
+      b.onclick = () => { state.rgb = c; placeKnob(c); applyColor(); };
+      return b;
+    }));
+    $('#photoBox').hidden = false;
+    if (photoPalette[0]) { state.rgb = photoPalette[0]; placeKnob(state.rgb); applyColor(); }
+  };
+  img.src = URL.createObjectURL(file);
+  e.target.value = '';
+});
+// Los LEDs se ven mejor con colores saturados: se elige por tono y se lleva al máximo de brillo
+const vivid = (c) => { const [h, s] = rgb2hsv(c); return hsv2rgb(h, Math.min(1, s * 1.25 + 0.1), 1); };
+function extractPalette(data) {
+  const bins = Array.from({ length: 18 }, () => ({ w: 0, r: 0, g: 0, b: 0 }));
+  for (let i = 0; i < data.length; i += 4 * 7) {
+    const c = [data[i], data[i + 1], data[i + 2]], [h, s, v] = rgb2hsv(c);
+    if (s < 0.22 || v < 0.18) continue;
+    const bin = bins[Math.floor(h / 20) % 18], w = s * v;
+    bin.w += w; bin.r += c[0] * w; bin.g += c[1] * w; bin.b += c[2] * w;
+  }
+  // Quedarse con tonos claramente distintos (al menos 35° de separación)
+  const top = [];
+  for (const b of bins.filter((b) => b.w > 0).sort((a, b) => b.w - a.w)) {
+    const c = vivid([b.r / b.w, b.g / b.w, b.b / b.w]), h = rgb2hsv(c)[0];
+    if (top.every((t) => { const d = Math.abs(rgb2hsv(t)[0] - h); return Math.min(d, 360 - d) >= 35; })) top.push(c);
+    if (top.length === 5) break;
+  }
+  return top.length ? top : [[255, 255, 255]];
+}
+photoCv.addEventListener('pointerdown', (e) => {
+  const r = photoCv.getBoundingClientRect();
+  const x = Math.floor((e.clientX - r.left) / r.width * photoCv.width), y = Math.floor((e.clientY - r.top) / r.height * photoCv.height);
+  const d = photoCv.getContext('2d').getImageData(Math.max(0, x - 2), Math.max(0, y - 2), 5, 5).data;
+  let sum = [0, 0, 0]; for (let i = 0; i < d.length; i += 4) { sum[0] += d[i]; sum[1] += d[i + 1]; sum[2] += d[i + 2]; }
+  state.rgb = vivid(sum.map((v) => v / (d.length / 4))); placeKnob(state.rgb); applyColor();
+});
+$('#photoPlay').onclick = () => { if (photoPalette.length > 1) { palette.splice(0, palette.length, ...photoPalette); store.set('palette', palette); renderPalette(); playAnim(palette, curStyle, tempoToPeriod(+$('#tempo').value)); } };
+
+// ---------- Mis efectos ----------
+const palette = store.get('palette', [[255, 0, 120], [0, 140, 255], [120, 0, 255]]);
+let curStyle = store.get('style', 'fade');
+let myFx = store.get('myFx', []);
+function renderPalette() {
+  const box = $('#palette');
+  box.replaceChildren(...palette.map((c, i) => {
+    const b = document.createElement('button'); b.className = 'sw'; b.style.background = css(c);
+    b.setAttribute('aria-label', 'Quitar este color'); b.title = 'Toca para quitar';
+    b.onclick = () => { if (palette.length > 2) { palette.splice(i, 1); store.set('palette', palette); renderPalette(); } };
+    return b;
+  }));
+  if (palette.length < 6) {
+    const add = document.createElement('label'); add.className = 'add'; add.textContent = '+'; add.title = 'Añadir color';
+    add.style.display = 'grid'; add.style.placeItems = 'center';
+    const inp = document.createElement('input'); inp.type = 'color'; inp.setAttribute('aria-label', 'Añadir color');
+    inp.value = '#' + state.rgb.map((x) => x.toString(16).padStart(2, '0')).join('');
+    inp.onchange = () => { const v = inp.value; palette.push([1, 3, 5].map((k) => parseInt(v.slice(k, k + 2), 16))); store.set('palette', palette); renderPalette(); };
+    add.append(inp); box.append(add);
+  }
+}
+$$('#styles .chip').forEach((c) => {
+  c.classList.toggle('on', c.dataset.style === curStyle);
+  c.onclick = () => { curStyle = c.dataset.style; store.set('style', curStyle); $$('#styles .chip').forEach((x) => x.classList.toggle('on', x === c)); if (anim && state.mode === 'custom') playAnim(palette, curStyle, tempoToPeriod(+$('#tempo').value)); };
+});
+$('#tempo').value = store.get('tempo', 50);
+slider('#tempo', '#tempoOut', (v) => (v < 34 ? 'Lento' : v > 66 ? 'Rápido' : 'Medio'), (v) => { store.set('tempo', v); if (anim && state.mode === 'custom') anim.period = tempoToPeriod(v); });
+function syncPlay() { $('#myFxPlay').textContent = anim ? 'Parar' : 'Reproducir'; $('#myFxPlay').classList.toggle('on', !!anim); }
+$('#myFxPlay').onclick = () => {
+  if (anim) { stopEngines(); clearMoment(); state.mode = 'color'; sendColor(state.rgb); paint(); return; }
+  playAnim(palette, curStyle, tempoToPeriod(+$('#tempo').value));
+};
+const STYLE_NAMES = { fade: 'Fundido', jump: 'Salto', breathe: 'Respiración', wave: 'Ola' };
+function renderMyFx() {
+  $('#myFxList').replaceChildren(...myFx.map((f, i) => {
+    const wrap = document.createElement('span'); wrap.className = 'fav';
+    const b = document.createElement('button'); b.className = 'myfx';
+    const dot = document.createElement('i'); dot.style.background = `linear-gradient(135deg, ${f.colors.map(css).join(',')})`;
+    b.append(dot, document.createTextNode(STYLE_NAMES[f.style] + ' ' + (i + 1)));
+    b.onclick = () => { palette.splice(0, palette.length, ...f.colors); renderPalette(); curStyle = f.style; $$('#styles .chip').forEach((x) => x.classList.toggle('on', x.dataset.style === f.style)); playAnim(f.colors, f.style, f.period); };
+    const x = document.createElement('button'); x.className = 'x'; x.textContent = '×'; x.setAttribute('aria-label', 'Borrar efecto');
+    x.onclick = () => { myFx.splice(i, 1); store.set('myFx', myFx); renderMyFx(); };
+    wrap.append(b, x); return wrap;
+  }));
+}
+$('#myFxSave').onclick = () => {
+  myFx.push({ colors: palette.map((c) => c.slice()), style: curStyle, period: tempoToPeriod(+$('#tempo').value) });
+  myFx = myFx.slice(-8); store.set('myFx', myFx); renderMyFx();
+  $('#myFxSave').textContent = 'Guardado'; setTimeout(() => { $('#myFxSave').textContent = 'Guardar'; }, 1500);
+};
+$('#myFxEdit').onclick = (e) => { const on = $('#myFxList').classList.toggle('editing'); e.target.textContent = on ? 'Listo' : 'Editar'; };
+
+// ---------- Enfoque (pomodoro con luz) ----------
+const RING = 339.3;
+const focus = { running: false, phase: 'work', end: 0, left: 25 * 60000, work: store.get('workMin', 25), brk: store.get('breakMin', 5), done: store.get('focusDone.' + new Date().toDateString(), 0), tick: null, warned: false, wake: null };
+function pickChips(sel, val, cb) {
+  $$(sel + ' .chip').forEach((c) => {
+    c.classList.toggle('on', +c.dataset.v === val);
+    c.onclick = () => { $$(sel + ' .chip').forEach((x) => x.classList.toggle('on', x === c)); cb(+c.dataset.v); };
+  });
+}
+pickChips('#workMin', focus.work, (v) => { focus.work = v; store.set('workMin', v); if (!focus.running && focus.phase === 'work') { focus.left = v * 60000; drawFocus(); } });
+pickChips('#breakMin', focus.brk, (v) => { focus.brk = v; store.set('breakMin', v); if (!focus.running && focus.phase === 'break') { focus.left = v * 60000; drawFocus(); } });
+focus.left = focus.work * 60000;
+const fmt = (ms) => { const s = Math.max(0, Math.ceil(ms / 1000)); return String(Math.floor(s / 60)).padStart(2, '0') + ':' + String(s % 60).padStart(2, '0'); };
+function drawFocus() {
+  const total = (focus.phase === 'work' ? focus.work : focus.brk) * 60000;
+  const left = focus.running ? focus.end - Date.now() : focus.left;
+  $('#focusTime').value = fmt(left);
+  $('#ring').style.strokeDashoffset = RING * (1 - Math.max(0, left) / total);
+  $('#focusPhase').textContent = !focus.running && left === total && focus.phase === 'work' ? 'Listo para concentrarte' : focus.phase === 'work' ? (focus.running ? 'Concentrado' : 'En pausa') : (focus.running ? 'Descanso' : 'Descanso en pausa');
+  $('#focusCount').textContent = focus.done ? `Hoy llevas ${focus.done} ${focus.done === 1 ? 'bloque' : 'bloques'}.` : '';
+  $('#focusStart').textContent = focus.running ? 'Pausar' : left < total ? 'Seguir' : focus.phase === 'work' ? 'Empezar' : 'Empezar descanso';
+}
+function focusLights() {
+  clearMoment();
+  if (focus.phase === 'work') { stopEngines('focus'); anim = null; setTempUI(10); applyTemp(true); setBright(100); }
+  else { setBright(70); playAnim([[40, 255, 120], [0, 200, 160]], 'breathe', 8, true); }
+}
+async function keepAwake(on) {
+  try { if (on && navigator.wakeLock) focus.wake = await navigator.wakeLock.request('screen'); else if (!on) { await focus.wake?.release(); focus.wake = null; } } catch {}
+}
+function focusTick() {
+  const left = focus.end - Date.now();
+  if (focus.phase === 'work' && left <= 60000 && !focus.warned) { focus.warned = true; playAnim([[255, 170, 0]], 'breathe', 3, true); }
+  if (left <= 0) {
+    if (focus.phase === 'work') { focus.done++; store.set('focusDone.' + new Date().toDateString(), focus.done); }
+    focus.phase = focus.phase === 'work' ? 'break' : 'work';
+    focus.end = Date.now() + (focus.phase === 'work' ? focus.work : focus.brk) * 60000;
+    focus.warned = false;
+    try { navigator.vibrate?.([200, 100, 200]); } catch {}
+    focusLights();
+  }
+  drawFocus();
+}
+$('#focusStart').onclick = () => {
+  if (focus.running) {
+    focus.left = focus.end - Date.now(); focus.running = false; clearInterval(focus.tick); keepAwake(false);
+  } else {
+    focus.end = Date.now() + focus.left; focus.running = true; focus.warned = false;
+    focusLights(); focus.tick = setInterval(focusTick, 500); keepAwake(true);
+  }
+  drawFocus();
+};
+$('#focusReset').onclick = () => {
+  clearInterval(focus.tick); focus.running = false; focus.phase = 'work'; focus.left = focus.work * 60000; keepAwake(false);
+  if (state.mode === 'custom') { anim = null; state.mode = 'color'; sendColor(state.rgb); paint(); }
+  drawFocus();
+};
+drawFocus();
+
+// ---------- Luz según la hora ----------
+function tempForNow(d = new Date()) {
+  const h = d.getHours() + d.getMinutes() / 60;
+  const pts = [[0, 100], [6, 90], [8, 40], [10, 10], [16, 10], [19, 55], [21, 85], [24, 100]];
+  for (let i = 1; i < pts.length; i++) if (h <= pts[i][0]) { const [h0, v0] = pts[i - 1], [h1, v1] = pts[i]; return Math.round(v0 + (v1 - v0) * (h - h0) / (h1 - h0)); }
+  return 100;
+}
+function setAutoDay(on) {
+  autoDay.on = on; $('#autoDay').checked = on; store.set('autoDay', on); clearInterval(autoDay.t);
+  if (!on) { $('#autoDayHint').textContent = 'Frío y despejado por la mañana, cálido por la noche. Se ajusta solo cada minuto.'; return; }
+  const step = () => {
+    const v = tempForNow(); setTempUI(v); applyTemp(true);
+    const hh = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    $('#autoDayHint').textContent = `Ahora (${hh}): ${v < 34 ? 'blanco frío' : v > 66 ? 'blanco cálido' : 'blanco neutro'}. Se ajusta solo cada minuto.`;
+  };
+  step(); autoDay.t = setInterval(step, 60000);
+}
+$('#autoDay').onchange = (e) => { if (e.target.checked) { stopEngines('auto'); clearMoment(); } setAutoDay(e.target.checked); };
 
 // ---------- Ajustes ----------
 function fillModelSelect() {
@@ -637,6 +904,9 @@ fillModelSelect();
 placeKnob(state.rgb);
 renderFavs();
 renderFx();
+renderPalette();
+renderMyFx();
+if (store.get('autoDay', false)) setAutoDay(true);
 const tab = store.get('tab', 'color');
 $(`.seg button[data-tab="${tab}"]`)?.click();
 paint();
