@@ -28,10 +28,33 @@
   <!-- La tira: refleja lo que se envía a los LEDs -->
   <section class="strip-wrap" aria-label="Vista previa de la luz">
     <div id="strip" class="strip"><span class="strip-glow"></span></div>
-    <button id="connect" class="connect">Conectar luces</button>
+    <div class="connect-row">
+      <button id="connect" class="connect">Conectar luces</button>
+      <button id="nearBtn" class="link" hidden>Buscar la más cercana</button>
+    </div>
   </section>
 
   <div id="notice" class="notice" hidden></div>
+
+  <div id="near" class="notice" hidden>
+    <b>Tiras cerca de ti</b> — toca la tuya:
+    <div id="nearList" class="near-list"></div>
+  </div>
+
+  <div id="connectHelp" class="notice" role="alert" hidden>
+    <p id="helpText"></p>
+    <div class="chips"><button class="chip" id="showAll">Ver todos los dispositivos</button></div>
+  </div>
+
+  <div id="works" class="notice" hidden>
+    <p><b>¿Han respondido tus luces?</b></p>
+    <div class="chips"><button class="chip" id="worksYes">Sí</button><button class="chip" id="worksNo">No, encontrar mi controlador</button></div>
+  </div>
+
+  <div id="wizard" class="notice" role="alert" hidden>
+    <p id="wizText"></p>
+    <div class="chips"><button class="chip on" id="wizYes">Sí</button><button class="chip" id="wizNo">No, probar otra</button></div>
+  </div>
 
   <section class="card bright">
     <div class="row-label"><span>Brillo</span><output id="brightOut">100 %</output></div>
@@ -107,10 +130,11 @@
     <label class="field">Tipo de controlador
       <select id="model"></select>
     </label>
-    <p class="hint">Se detecta solo por el nombre. Si las luces no responden, prueba otra variante con el mismo nombre.</p>
+    <p class="hint">Se detecta solo por el nombre. Si las luces no responden, usa el asistente.</p>
+    <button id="tryWizard" class="link">Encontrar mi controlador (asistente)</button>
     <label class="check"><input type="checkbox" id="anyDevice"> Mostrar todos los dispositivos Bluetooth al conectar</label>
     <label class="check"><input type="checkbox" id="autoOn" checked> Encender al conectar</label>
-    <button id="forget" class="link">Desconectar</button>
+    <div class="links"><button id="forget" class="link">Desconectar</button><button id="copyLog" class="link">Copiar registro</button></div>
     <pre id="log" class="log" aria-label="Registro"></pre>
   </details>
 

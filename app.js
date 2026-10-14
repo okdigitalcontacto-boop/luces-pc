@@ -64,38 +64,66 @@ function effectList() {
 }
 
 // ---------- Bluetooth ----------
-const SERVICES = [0xfff0, 0xffe0, 0xffe5, 0xffd0, 0xff00];
-const PREFIXES = ['ELK', 'MELK', 'LED', 'JACKYLED', 'XROCKER', 'XSL', 'BLEDOM'];
-let device = null, chr = null, manualClose = false;
+// UUID completos: algunos navegadores (p. ej. Bluefy) no aceptan los alias numéricos
+const UUID = (s) => `0000${s}-0000-1000-8000-00805f9b34fb`;
+const SERVICES = ['fff0', 'ffe0', 'ffe5', 'ffd0', 'ff00'].map(UUID);
+const PREFIXES = ['ELK', 'MELK', 'LED', 'BLEDOM', 'MODELX', 'JACKYLED', 'XROCKER', 'XSL'];
+const looksLikeStrip = (n = '') => PREFIXES.some((p) => n.toUpperCase().startsWith(p));
+let device = null, chr = null, manualClose = false, busy = false, noWwr = false;
 
-async function connect() {
+const withTimeout = (p, ms, msg) => Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error(msg)), ms))]);
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// Un solo requestDevice por toque: los navegadores exigen que venga directamente de un gesto.
+async function connect(mode = $('#anyDevice').checked ? 'all' : 'strips', exactName = null) {
+  if (busy) return;
   if (!navigator.bluetooth) return showNoBluetooth();
+  busy = true; setConnectBusy('Buscando…'); hideHelp();
+  let opts;
+  if (exactName) opts = { filters: [{ name: exactName }], optionalServices: SERVICES };
+  else if (mode === 'all') opts = { acceptAllDevices: true, optionalServices: SERVICES };
+  else opts = { filters: PREFIXES.map((p) => ({ namePrefix: p })), optionalServices: SERVICES };
   try {
-    const any = $('#anyDevice').checked;
-    device = await navigator.bluetooth.requestDevice(any
-      ? { acceptAllDevices: true, optionalServices: SERVICES }
-      : { filters: PREFIXES.map((p) => ({ namePrefix: p })), optionalServices: SERVICES });
-    store.set('deviceId', device.id);
-    await attach(device);
+    let dev;
+    try { dev = await navigator.bluetooth.requestDevice(opts); }
+    catch (e) {
+      // Si el navegador no entiende los filtros, mostrar todos
+      if (e.name === 'TypeError' && !opts.acceptAllDevices) {
+        log('Filtros no admitidos (' + e.message + '); muestro todos los dispositivos');
+        dev = await navigator.bluetooth.requestDevice({ acceptAllDevices: true, optionalServices: SERVICES });
+      } else throw e;
+    }
+    store.set('deviceId', dev.id);
+    await attach(dev);
+    askIfWorks();
   } catch (e) {
-    if (e.name === 'NotFoundError') setStatus('No se eligió ningún dispositivo');
-    else fail(e);
+    explainError(e);
+  } finally {
+    busy = false; if (!chr) resetConnectBtn();
   }
 }
 
 async function attach(dev, quiet = false) {
   device = dev;
   manualClose = false;
-  dev.removeEventListener('gattserverdisconnected', onDrop);
-  dev.addEventListener('gattserverdisconnected', onDrop);
-  setStatus('Conectando…');
+  if (dev.addEventListener) { dev.removeEventListener?.('gattserverdisconnected', onDrop); dev.addEventListener('gattserverdisconnected', onDrop); }
+  else dev.ongattserverdisconnected = onDrop;
+  setStatus('Conectando con ' + (dev.name || 'el dispositivo') + '…');
+  setConnectBusy('Conectando…');
+  log(`Elegido: ${dev.name || '(sin nombre)'} · id ${String(dev.id).slice(0, 8)}…`);
   const saved = store.get('model.' + dev.name, null);
   state.modelIdx = saved != null && MODELS[saved] ? saved : detectModel(dev.name || '');
+  let server = null;
+  for (let i = 1; i <= 3 && !server; i++) {
+    try { server = await withTimeout(dev.gatt.connect(), 15000, 'La tira no contesta (tiempo agotado)'); }
+    catch (e) { log(`Intento ${i}/3 de conexión fallido: ${e.message}`); if (i === 3) throw e; await sleep(700); }
+  }
+  chr = await withTimeout(findWritable(server), 15000, 'No se pudieron leer los servicios de la tira');
+  if (!chr) throw Object.assign(new Error('Este dispositivo no tiene un canal para recibir órdenes. ¿Es la tira LED?'), { name: 'NoChannel' });
+  // Si el nombre no dice nada, el canal sí: ffe1 = familia LEDBLE
+  if (saved == null && !looksLikeStrip(dev.name) && /ffe1/.test(chr.uuid)) state.modelIdx = MODELS.findIndex((m) => m.name === 'LEDBLE');
   fillModelSelect();
-  const server = await dev.gatt.connect();
-  chr = await findWritable(server);
-  if (!chr) throw new Error('No encuentro dónde escribir en este dispositivo. ¿Seguro que es la tira LED?');
-  log(`Conectado a ${dev.name || 'dispositivo'} · modelo ${model().name} · ${chr.uuid}`);
+  log(`Conectado · modelo ${model().name} · canal ${chr.uuid.slice(4, 8)}`);
   if (/^(melk|modelx)/i.test(dev.name || '')) {
     await rawWrite([0x7e, 0x07, 0x83]); await sleep(1000); await rawWrite([0x7e, 0x04, 0x04]);
     log('Inicio de sesión MELK enviado');
@@ -103,38 +131,54 @@ async function attach(dev, quiet = false) {
   $('#devName').textContent = dev.name || 'Luces PC';
   setStatus('Conectado', true);
   $('#power').disabled = false;
-  $('#connect').textContent = 'Cambiar de dispositivo';
-  $('#connect').classList.add('secondary');
+  resetConnectBtn();
   $('#notice').hidden = true;
-  if ($('#autoOn').checked && !quiet) setPower(true);
+  if ($('#autoOn').checked && !quiet) { setPower(true); if (state.mode === 'white') applyTemp(); else sendColor(state.rgb); }
   renderFx();
 }
 
+const canWrite = (c) => !c.properties || c.properties.write || c.properties.writeWithoutResponse;
 async function findWritable(server) {
   const want = model().write_uuid;
-  const services = await server.getPrimaryServices();
+  const order = [UUID(want.slice(4, 7) + '0'), ...SERVICES].filter((v, i, a) => a.indexOf(v) === i);
   let fallback = null;
-  for (const s of services) {
-    let chars = [];
-    try { chars = await s.getCharacteristics(); } catch { continue; }
-    for (const c of chars) {
-      if (c.uuid === want) return c;
-      if (!fallback && (c.properties.writeWithoutResponse || c.properties.write)) fallback = c;
-    }
+  // 1) Servicios conocidos, uno a uno (más compatible)
+  for (const su of order) {
+    let s;
+    try { s = await server.getPrimaryService(su); } catch { continue; }
+    try { return await s.getCharacteristic(want); } catch {}
+    try {
+      for (const c of await s.getCharacteristics()) {
+        if (c.uuid === want) return c;
+        if (!fallback && canWrite(c)) fallback = c;
+      }
+    } catch {}
   }
+  if (fallback) return fallback;
+  // 2) Todos los servicios
+  try {
+    for (const s of await server.getPrimaryServices()) {
+      let chars = [];
+      try { chars = await s.getCharacteristics(); } catch { continue; }
+      for (const c of chars) {
+        if (c.uuid === want) return c;
+        if (!fallback && canWrite(c)) fallback = c;
+      }
+    }
+  } catch (e) { log('No se pudieron listar los servicios: ' + e.message); }
   return fallback;
 }
 
 async function onDrop() {
   chr = null;
   $('#power').disabled = true;
-  if (manualClose) { setStatus('Desconectado'); return; }
+  if (manualClose) { setStatus('Desconectado'); resetConnectBtn(); return; }
   for (let i = 1; i <= 5; i++) {
     setStatus(`Reconectando (${i}/5)…`);
     await sleep(800 * i);
     try { await attach(device, true); return; } catch (e) { log('Reintento fallido: ' + e.message); }
   }
-  setStatus('Se perdió la conexión. Pulsa «Conectar luces».');
+  setStatus('Se perdió la conexión');
   resetConnectBtn();
 }
 
@@ -142,20 +186,131 @@ async function tryAutoReconnect() {
   if (!navigator.bluetooth?.getDevices) return;
   try {
     const id = store.get('deviceId', null);
-    const devs = await navigator.bluetooth.getDevices();
-    const dev = devs.find((d) => d.id === id);
-    if (dev) { log('Intentando reconectar con ' + dev.name); await attach(dev, true); }
-  } catch (e) { log('Reconexión automática no disponible: ' + e.message); }
+    const dev = (await navigator.bluetooth.getDevices()).find((d) => d.id === id);
+    if (dev) { log('Reconectando con ' + dev.name); busy = true; await attach(dev, true); }
+  } catch (e) { log('Reconexión automática no disponible: ' + e.message); resetConnectBtn(); }
+  finally { busy = false; }
 }
-
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 async function rawWrite(bytes) {
   if (!chr) return;
   const data = new Uint8Array(bytes);
-  if (chr.properties.writeWithoutResponse && chr.writeValueWithoutResponse) await chr.writeValueWithoutResponse(data);
-  else if (chr.writeValueWithResponse) await chr.writeValueWithResponse(data);
-  else await chr.writeValue(data);
+  const props = chr.properties;
+  if (!noWwr && chr.writeValueWithoutResponse && (!props || props.writeWithoutResponse)) {
+    try { return await chr.writeValueWithoutResponse(data); }
+    catch (e) { if (e.name !== 'NotSupportedError' && e.name !== 'TypeError') throw e; noWwr = true; log('Escritura sin respuesta no admitida; uso escritura normal'); }
+  }
+  if (chr.writeValueWithResponse && (!props || props.write)) return chr.writeValueWithResponse(data);
+  return chr.writeValue(data);
+}
+
+// ---------- Buscar la más cercana (si el navegador permite escanear) ----------
+async function scanNearest() {
+  if (busy) return;
+  const list = $('#nearList');
+  busy = true; setConnectBusy('Buscando…');
+  const seen = new Map();
+  let scan = null;
+  try {
+    scan = await navigator.bluetooth.requestLEScan({ acceptAllAdvertisements: true });
+    const onAd = (ev) => {
+      const name = ev.device?.name || ev.name;
+      if (!name || ev.rssi == null) return;
+      const prev = seen.get(name);
+      seen.set(name, prev == null ? ev.rssi : Math.max(prev, ev.rssi));
+    };
+    navigator.bluetooth.addEventListener('advertisementreceived', onAd);
+    await sleep(3500);
+    navigator.bluetooth.removeEventListener('advertisementreceived', onAd);
+  } catch (e) { log('Escaneo no disponible: ' + e.message); }
+  finally { try { scan?.stop(); } catch {} busy = false; resetConnectBtn(); }
+  const found = [...seen].sort((a, b) => b[1] - a[1]).sort((a, b) => looksLikeStrip(b[0]) - looksLikeStrip(a[0]));
+  if (!found.length) { connect(); return; }
+  list.replaceChildren(...found.slice(0, 6).map(([name, rssi], i) => {
+    const b = document.createElement('button');
+    b.className = 'near-item';
+    const bars = rssi > -60 ? 'Muy cerca' : rssi > -75 ? 'Cerca' : 'Lejos';
+    b.innerHTML = `<span></span><small>${bars}${i === 0 ? ' · la más cercana' : ''}</small>`;
+    b.firstChild.textContent = name;
+    b.onclick = () => connect('strips', name);
+    return b;
+  }));
+  $('#near').hidden = false;
+}
+
+// ---------- Ayuda de conexión ----------
+function explainError(e) {
+  log(`Error ${e.name}: ${e.message}`);
+  const msg = {
+    NotFoundError: /cancel/i.test(e.message) || /User/i.test(e.message)
+      ? 'No elegiste ninguna tira. Si no aparecía en la lista, prueba «Ver todos los dispositivos».'
+      : 'No apareció ninguna tira. Comprueba que está encendida y que LotusLamp X está cerrada del todo, o prueba «Ver todos los dispositivos».',
+    NetworkError: 'La tira no acepta la conexión. Cierra LotusLamp X del todo (u otro móvil conectado), acércate y vuelve a intentarlo.',
+    SecurityError: 'El navegador ha bloqueado el Bluetooth. Abre la app desde su dirección https y pulsa el botón otra vez.',
+    NotAllowedError: 'Falta el permiso de Bluetooth. En iPhone: Ajustes › Bluefy › Bluetooth activado.',
+    NoChannel: e.message,
+  }[e.name] || (/tiempo agotado|no contesta/i.test(e.message)
+    ? 'La tira no contesta. Apaga y enciende las luces (desenchufa el USB 5 segundos), cierra LotusLamp X y vuelve a intentarlo.'
+    : 'No se pudo conectar: ' + e.message);
+  setStatus('Sin conectar');
+  showHelp(msg);
+}
+function showHelp(msg) { $('#helpText').textContent = msg; $('#connectHelp').hidden = false; }
+function hideHelp() { $('#connectHelp').hidden = true; $('#near').hidden = true; }
+
+// ¿Han respondido las luces?
+function askIfWorks() {
+  $('#works').hidden = false;
+  clearTimeout(askIfWorks.t); askIfWorks.t = setTimeout(() => { $('#works').hidden = true; }, 20000);
+}
+
+// ---------- Asistente: encontrar mi controlador ----------
+const WIZ_COLORS = [['rojo', [255, 0, 0]], ['verde', [0, 255, 0]], ['azul', [0, 0, 255]]];
+let wiz = null;
+function wizardCandidates() {
+  const seen = new Set();
+  return MODELS.map((m, i) => [m, i]).filter(([m]) => {
+    if (!m.commands.color || !m.commands.turn_on) return false;
+    const short = chr ? chr.uuid.slice(4, 8) : '';
+    if (/^(fff3|ffe1)$/.test(short) && m.write_uuid.slice(4, 8) !== short) return false;
+    const k = JSON.stringify([m.commands.turn_on, m.commands.color, m.commands.brightness]);
+    if (seen.has(k)) return false;
+    seen.add(k); return true;
+  }).map(([, i]) => i);
+}
+function startWizard() {
+  $('#works').hidden = true;
+  if (!chr) { showHelp('Conecta primero la tira con «Conectar luces».'); return; }
+  wiz = { list: wizardCandidates(), i: 0, prev: state.modelIdx };
+  log('Asistente: ' + wiz.list.length + ' variantes a probar');
+  wizardStep();
+}
+function wizardStep() {
+  const box = $('#wizard');
+  if (wiz.i >= wiz.list.length) {
+    state.modelIdx = wiz.prev; fillModelSelect(); wiz = null;
+    $('#wizText').textContent = 'Ninguna variante ha funcionado. Copia el registro (Ajustes y ayuda) y pásamelo para añadir tu modelo.';
+    $('#wizYes').hidden = true; $('#wizNo').textContent = 'Cerrar';
+    $('#wizNo').onclick = () => { box.hidden = true; $('#wizYes').hidden = false; $('#wizNo').textContent = 'No, probar otra'; $('#wizNo').onclick = wizardNo; };
+    return;
+  }
+  state.modelIdx = wiz.list[wiz.i];
+  const [cname, rgb] = WIZ_COLORS[wiz.i % 3];
+  send('power', cmd('turn_on'));
+  send('brightness', cmd('brightness', { i: 100 }));
+  sendColor(rgb);
+  setLed(rgb);
+  $('#wizText').textContent = `Prueba ${wiz.i + 1} de ${wiz.list.length}: ¿tus luces se han puesto en ${cname.toUpperCase()}?`;
+  box.hidden = false;
+}
+function wizardNo() { wiz.i++; wizardStep(); }
+function wizardYes() {
+  const idx = state.modelIdx;
+  if (device) store.set('model.' + device.name, idx);
+  fillModelSelect(); renderFx();
+  log('Asistente: controlador encontrado → ' + MODELS[idx].name);
+  wiz = null; $('#wizard').hidden = true;
+  setStatus('Conectado · controlador ajustado', true);
 }
 
 // Cola: un comando de cada tipo, solo el último cuenta (evita atascos al arrastrar)
@@ -431,14 +586,30 @@ $('#model').onchange = (e) => {
   log('Modelo cambiado a ' + model().name);
   renderFx();
 };
-$('#forget').onclick = () => { manualClose = true; device?.gatt?.disconnect(); resetConnectBtn(); };
+$('#forget').onclick = () => { manualClose = true; try { device?.gatt?.disconnect(); } catch {} chr = null; resetConnectBtn(); setStatus('Desconectado'); };
 $('#power').onclick = () => setPower(!state.on);
-$('#connect').onclick = connect;
+$('#connect').onclick = () => connect();
+$('#showAll').onclick = () => connect('all');
+$('#nearBtn').onclick = scanNearest;
+$('#tryWizard').onclick = startWizard;
+$('#worksYes').onclick = () => { $('#works').hidden = true; };
+$('#worksNo').onclick = startWizard;
+$('#wizYes').onclick = wizardYes;
+$('#wizNo').onclick = wizardNo;
+$('#copyLog').onclick = async () => {
+  try { await navigator.clipboard.writeText(logEl.textContent); $('#copyLog').textContent = 'Copiado'; }
+  catch { const r = document.createRange(); r.selectNodeContents(logEl); getSelection().removeAllRanges(); getSelection().addRange(r); $('#copyLog').textContent = 'Seleccionado: cópialo'; }
+  setTimeout(() => { $('#copyLog').textContent = 'Copiar registro'; }, 2500);
+};
+if (navigator.bluetooth?.requestLEScan) $('#nearBtn').hidden = false;
 
 function resetConnectBtn() {
-  $('#connect').textContent = 'Conectar luces'; $('#connect').classList.remove('secondary');
+  const c = $('#connect'); c.disabled = false; c.classList.remove('busy');
+  if (chr) { c.textContent = 'Cambiar de dispositivo'; c.classList.add('secondary'); return; }
+  c.textContent = 'Conectar luces'; c.classList.remove('secondary');
   $('#power').disabled = true;
 }
+function setConnectBusy(t) { const c = $('#connect'); c.disabled = true; c.classList.add('busy'); c.textContent = t; }
 function setStatus(t, ok = false) { const s = $('#status'); s.textContent = t; s.classList.toggle('ok', ok); if (ok) store.set('everConnected', true); paint(); }
 function fail(e) { log('Error: ' + e.message); setStatus(e.message); }
 
@@ -469,6 +640,9 @@ renderFx();
 const tab = store.get('tab', 'color');
 $(`.seg button[data-tab="${tab}"]`)?.click();
 paint();
+const bt = navigator.bluetooth;
+log(`Navegador: ${navigator.userAgent.replace(/^Mozilla\/5.0 /, '').slice(0, 120)}`);
+log(`Bluetooth web: ${bt ? 'sí' : 'no'} · escaneo: ${bt?.requestLEScan ? 'sí' : 'no'} · recordar: ${bt?.getDevices ? 'sí' : 'no'} · https: ${window.isSecureContext ? 'sí' : 'no'}`);
 checkBluetooth();
 tryAutoReconnect();
 if ('serviceWorker' in navigator && window.isSecureContext) navigator.serviceWorker.register('sw.js').catch(() => {});
